@@ -15,6 +15,8 @@
 - Tracing one request end-to-end (the Layer 3 probe)
 - Test directory as documentation
 - Reading large files cheaply
+- Phase 7: verifying the report against the codebase
+- Selective-huge mode: deep zones + breadth-only (huge repos)
 
 Cheap, targeted evidence-gathering commands. Layer 1/2/3 refers to the cascade in SKILL.md. The read-tier ladder: **skim**
 (outline/first-pass), **analytical read** (full read with a written answer to a
@@ -23,8 +25,8 @@ SELECTIVE mode for hypothesis-critical files short of full-read tier), **full
 deep-read** (the tiers the coverage ledger records). Full reads are earned by
 **seams** — entry points, handoffs, data-shape changes, state transitions —
 not by file size or importance: when a read hits a seam, slow down and answer
-what crosses, in what shape, what breaks on failure, and who owns the
-contract; file interiors get classification, not narration.
+the seam's four questions (SKILL.md Phase 2); file interiors get
+classification, not narration.
 
 ## Universal
 
@@ -52,6 +54,8 @@ python3 scripts/analyze.py sweep <repo-root> [--depth 2] [--json]
 python3 scripts/analyze.py langs <repo-root>
 ```
 
+Huge-repo flags: `--no-loc` fast enumeration (auto above 30k files — counts + tags at 100%, LOC skipped, size verdicts unavailable); `--loc` forces reads back on; `--threshold-huge-files/--threshold-huge-loc` (default 2,000 / 500k) set the selective-huge boundary, `0` disables the tier.
+
 Read the sweep output as a map of study targets, in this order:
 
 1. **Manifests + lockfiles** — the factual dependency tree and declared problem domains.
@@ -69,13 +73,13 @@ After the sweep, assign the study dispositions (`core`, `interface-adapter`, `su
 The sweep answers "what exists"; `focus` answers "what matters *for this goal*". Run it right after the sweep, before spending any deep reads:
 
 ```bash
-python3 scripts/analyze.py focus <repo-root> "<user's goal as stated>" [--tier core|all] [--top N] [--json]
+python3 scripts/analyze.py focus <repo-root> "<user's goal as stated>" [--tier core|all] [--top N] [--fast|--full] [--json]
 ```
 
-- Per-file score = stemmed goal-term coverage in the body + goal terms in path/directory names + goal-matching `def`/`class` names + goal terms in the opening 15 lines. Zero-score files are omitted (silence = the vocabulary isn't there; re-check the repo's own terms via `skeleton` and retry with those).
-- `--tier core` (default): `source` + `design-input` only — the deep-read candidates. `--tier all`: also docs, tests, config, migrations — for goals about behavior, contracts, or ops. Dependency trees (`.venv`, vendored) never qualify.
-- Use the ranking to: pick the Layer-3 trace seed (top hit), order SELECTIVE-mode deep reads, and batch skims (`--top 40`). In FULL-READ mode it sequences reads so the user's goal is answered first even though everything gets read eventually.
-- It is a lexical prior: it cannot see call graphs. A dispatcher that never says "auth" but routes every auth request will rank low — cross-check high fan-in modules (ablation) before finalizing the read list. Exit code 1 = goal was all stop-words; fall back to sweep-driven selection.
+Scoring, tiers, fast/full modes, and the prior-not-verdict rule are specified in SKILL.md Phase 1. Probing-specific notes:
+
+- Zero-score files are omitted (silence = the vocabulary isn't there; re-check the repo's own terms via `skeleton` and retry with those).
+- In FULL-READ mode it sequences reads so the user's goal is answered first even though everything gets read eventually.
 - On follow-up questions, re-run focus with the follow-up as the query — it doubles as the "is this a new high-value question?" probe before you touch any file.
 
 ## Working with framework-idiomatic code
@@ -181,7 +185,7 @@ rg "from .*<module>|import .*<module>" -l
 rg "try|catch|except|onError|\.catch|recover|panic" <edge-file> -n
 ```
 
-Per seam, record the four answers: what crosses, in what shape (worked-instance values if tracing), what happens on failure, and which side owns the contract. The output feeds report §3b and the system map's edge labels.
+Per seam, record the seam's four answers (SKILL.md Phase 2) — with worked-instance values at this hop if tracing. The output feeds report §3b and the system map's edge labels.
 
 ## Data flow probes
 
@@ -269,7 +273,7 @@ Pick the flow most representative of the system's purpose, and **one worked inst
 
 1. Find the entry (handler, route, CLI command, message consumer).
 2. Follow calls downward; note each boundary crossed (HTTP→app, app→domain, domain→IO).
-3. At each seam, answer the four questions: what crosses, in what shape (the instance's values at this hop), what happens on failure, and who owns the contract.
+3. At each seam, answer the four questions (SKILL.md Phase 2) — the instance's values are the shape in/out at this hop.
 4. Note where errors are handled vs. propagated.
 5. Note where data shapes change (DTOs, serialization) — the instance's values are the before/after pair.
 6. Stop when you hit infrastructure (DB, network, disk, queue).
@@ -297,3 +301,57 @@ sed -n '100,140p' <file>           # read only the section that matters
 ```
 
 Full reads are reserved for: seams on the critical path, files you'll cite extensively, and any file < 200 lines that's high-fan-in. Everything else is swept, tagged, and skimmed — the coverage ledger records which tier each file got.
+
+## Phase 7: verifying the report against the codebase
+
+The second pass — the draft report checked against the code it describes. Run after synthesis, before the run is called done (SKILL.md Phase 7).
+
+**7a — mechanical citation audit (automated):**
+
+```bash
+# Every file:line anchor, cited path, cross-link, and the stamp, checked
+# against the repo. Exit 0 = audit clean; exit 1 = the report doesn't ship.
+python3 scripts/analyze.py verify <repo-root>                        # auto-discovers
+python3 scripts/analyze.py verify <repo-root> docs/architecture/*.md  # split mode
+python3 scripts/analyze.py verify <repo-root> --json                  # machine-readable
+```
+
+Findings it catches are enumerated in SKILL.md Phase 7a. **Every fix re-reads the actual source file** — never re-anchor from memory (the fix that isn't checked is how a wrong line number becomes a confidently wrong line number).
+
+**7b — cold-eyes claim re-probe (judgment, sampled by blast radius):**
+
+```bash
+# Over-claim hunt: grep for the counterexample behind "always/never/only/guaranteed"
+rg "<claimed-impossible-pattern>" -i -n --type <lang>
+
+# Under-claim hunt: re-run the seam probes on the map's edges, diff vs §3b
+rg "exec\(|spawn|subprocess|celery|bullmq|systemd|amqp://|redis://" -i -l
+
+# Worked instance re-walk: open the cited hops in order, values verbatim
+sed -n '<line>,<line>p' <cited-file>    # hop by hop, does the story hold?
+
+# Refuted-hypothesis regression: claims matching a Refuted ledger row
+rg "<refuted-pattern>" -i -n            # the report must not quietly re-assert it
+```
+
+Re-probe one load-bearing claim per section, prioritized: §5 mapping rows, §7 decisions, §8 deviations, everything the user's goal asked about, and the worked instance end to end. Soften or delete what the code doesn't support; upgrade `(inferred)` where a probe has since confirmed. Then **re-run 7a on the final text** — the audit that matters is the one run after all edits.
+
+## Selective-huge mode: deep zones + breadth-only (huge repos)
+
+Trigger and tier rules: SKILL.md deep-read policy. Sweep breadth stays 100%; depth concentrates into 1–3 **deep zones**.
+
+**Picking zones (when auto-picking or sanity-checking the user's pick):**
+
+```bash
+python3 scripts/analyze.py sweep <repo-root> --json       # dir census: LOC + disposition per top-level path
+python3 scripts/analyze.py focus <repo-root> "<goal>"     # goal-signal density (fast mode fine here)
+python3 scripts/analyze.py skeleton <top-dir>             # per-zone structure, no direction from import graphs yet
+```
+
+Score each top-level candidate: goal-signal density × fan-in (who depends on it) × state ownership (has migrations/schema?). Zone the flow the user's goal names; when the goal is broad, zone the **stable spine** — the gateway/dispatch + the domain core everything imports. Zone rows go in the coverage ledger with the tier; everything else is `breadth-only`.
+
+**Breadth-only probe set (zones-exempt, still mandatory):** entry-point discovery, `skeleton` at depth 1 per top dir, seam discovery from ops surfaces (compose/Procfile/k8s/queue configs), migration + config reads, and ablation on the honest-fan-in candidates. This is enough for the system map, the seams table, and structural claims — nothing behavioral.
+
+**Zone probes (full depth):** everything in the standard workflow — Layer 2/3 reads, the worked-instance trace (it must live inside a zone), Phase-2b seam correction, ablation within the zone.
+
+**Scope discipline:** the worked instance, contrast flow, and decision archaeology all stay inside zones. A question that surfaces outside a zone gets one of two answers: structural (from the breadth probe set) or it goes in Open questions with the zone it would need. The Phase-7 re-probe checks §0b against this partition — depth outside zones is the regression it hunts.

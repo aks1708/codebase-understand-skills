@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Static analysis of a repo: full sweep, structure, skeleton, and ablation probes.
 
-Five subcommands feeding the reverse-engineering workflow (see SKILL.md):
+Seven subcommands feeding the reverse-engineering workflow (see SKILL.md):
 
   sweep      Full-repo coverage sweep: EVERY file enumerated, counted, LOC'd,
              and tagged with a disposition. Output = the coverage ledger.
              Enforces the coverage contract: 100% of the repo accounted for.
+             Three deep-read verdicts: full-read / selective / selective-huge
+             (>2k source files or >500k source LOC — concentrate depth into
+             1-3 deep zones). Above 30k files LOC reads are skipped for speed
+             (fast mode: counts + tags stay 100%; --loc forces reads back on).
   langs      Language census only (files + LOC per language).
   skeleton   Layer-2 structural outline across ALL detected languages:
              classes, functions, imports, routes.
@@ -13,7 +17,14 @@ Five subcommands feeding the reverse-engineering workflow (see SKILL.md):
   trace      Layer-3 helper: list files containing a symbol (starting points
              for a manual end-to-end trace).
   focus      Query-ranked reading order: score every file against the user's
-             stated goal and emit the deep-read queue.
+             stated goal and emit the deep-read queue. Auto fast mode on
+             huge repos (path/symbol/header scoring only; --full to force
+             the exact pass).
+  verify     Phase-7 citation audit: extract every `file:line` anchor, cited
+             path, and cross-link from the draft report and check each
+             against the repo — file exists, line in range, anchor not
+             blank, link resolves. Exit 1 on any failure or a citation-free
+             report: the report doesn't ship until the audit runs clean.
 
 Read-only. Cheap by design: grep + parsing, no code execution from the repo.
 Vendored/generated trees are counted and tagged, but their LOC is not read.
@@ -21,12 +32,15 @@ Vendored/generated trees are counted and tagged, but their LOC is not read.
 Usage:
   python3 analyze.py sweep <repo-root> [--depth 2] [--json]
                            [--threshold-files 100] [--threshold-loc 50000]
+                           [--threshold-huge-files 2000] [--threshold-huge-loc 500000]
+                           [--no-loc | --loc]
   python3 analyze.py langs <repo-root>
   python3 analyze.py skeleton <repo-root> [--lang auto|python|ts|js|go|rust|java|...]
   python3 analyze.py ablation <repo-root> <module-name> [--lang ...]
   python3 analyze.py trace <repo-root> <symbol> [--lang ...]
   python3 analyze.py focus <repo-root> "<query>" [--tier core|all] [--top N]
-                           [--json]
+                           [--fast | --full] [--json]
+  python3 analyze.py verify <repo-root> [report ...] [--json] [--all]
 """
 from __future__ import annotations
 
@@ -337,8 +351,12 @@ def primary_disposition(tags: list[str], count: Counter | None = None) -> str:
 
 # ---------------------------------------------------------------- sweep core
 
-def walk_repo(root: Path):
-    """Yield (path, rel, suffix, tags, loc) for every file. 100% coverage."""
+def walk_repo(root: Path, read_loc: bool = True):
+    """Yield (path, rel, suffix, tags, loc) for every file. 100% coverage.
+
+    read_loc=False skips per-file byte reads (fast enumeration for huge
+    repos): disposition tagging is unaffected, all LOC comes back None.
+    """
     for p in root.rglob("*"):
         if p.is_dir():
             continue
@@ -348,14 +366,42 @@ def walk_repo(root: Path):
         suffix = p.suffix.lower()
         tags = tag_file(rel, suffix)
         loc = None
-        heavy = any(part in NO_LOC_DIRS for part in rel.parts)
-        if not heavy and is_text(p):
-            loc = loc_of(p)
+        if read_loc:
+            heavy = any(part in NO_LOC_DIRS for part in rel.parts)
+            if not heavy and is_text(p):
+                loc = loc_of(p)
         yield p, rel, suffix, tags, loc
 
 
+# Above this file count, sweep drops per-file LOC reads (enumeration tags and
+# counts stay 100%; LOC columns run on the best-effort sample that remains).
+FAST_SWEEP_FILES = 30_000
+
+
 def cmd_sweep(root: Path, depth: int, as_json: bool,
-              threshold_files: int = 100, threshold_loc: int = 50000) -> int:
+              threshold_files: int = 100, threshold_loc: int = 50000,
+              huge_files: int = 2000, huge_loc: int = 500_000,
+              loc_mode: str = "auto") -> int:
+    # Fast-enumeration pre-census: above FAST_SWEEP_FILES, reading every file's
+    # bytes costs minutes for no classification benefit — loc_mode forces it.
+    auto_no_loc = False
+    if loc_mode == "no-loc":
+        read_loc = False
+    elif loc_mode == "loc":
+        read_loc = True
+    else:
+        read_loc = True
+        n_files = sum(1 for p in root.rglob("*") if p.is_file()
+                      and not any(part in SKIP_DIRS for part in p.relative_to(root).parts))
+        if n_files > FAST_SWEEP_FILES:
+            read_loc = False
+            auto_no_loc = True
+    if not read_loc:
+        # LOC-less runs can't measure size tiers: no full-read (never proven
+        # affordable), no huge tier (source LOC unknown). Files still count;
+        # verdict floors to selective because neither tier is measurable.
+        threshold_files = -1
+        huge_files = huge_loc = -1
     records = []
     total_loc = 0
     locd_files = 0
@@ -369,7 +415,7 @@ def cmd_sweep(root: Path, depth: int, as_json: bool,
         "design_inputs": [], "lockfiles": [],
     }
 
-    for p, rel, suffix, tags, loc in walk_repo(root):
+    for p, rel, suffix, tags, loc in walk_repo(root, read_loc=read_loc):
         records.append((rel, suffix, tags, loc))
         lang = LANG_BY_EXT.get(suffix)
         if lang and loc is not None:
@@ -430,20 +476,31 @@ def cmd_sweep(root: Path, depth: int, as_json: bool,
     for _, _, tags, _ in records:
         disp_files[primary_disposition(tags)] += 1
 
-    # deep-read policy: small repos get every source file fully read
-    full_read = source_files <= threshold_files and source_loc <= threshold_loc
-    if full_read:
+    # deep-read policy: three tiers, decided by source-file count + source LOC
+    if full_read := (source_files <= threshold_files and source_loc <= threshold_loc):
         policy = "full-read"
         policy_why = (f"{source_files} source files, {source_loc:,} source LOC "
                       f"≤ thresholds ({threshold_files} files / {threshold_loc:,} LOC)")
+    elif (huge_files > 0 or huge_loc > 0) and (
+            (huge_files > 0 and source_files > huge_files)
+            or (huge_loc > 0 and source_loc > huge_loc)):
+        policy = "selective-huge"
+        over = []
+        if huge_files > 0 and source_files > huge_files:
+            over.append(f"files: {source_files:,} > {huge_files:,}")
+        if huge_loc > 0 and source_loc > huge_loc:
+            over.append(f"LOC: {source_loc:,} > {huge_loc:,}")
+        policy_why = ("; ".join(over)
+                      + f" | huge thresholds: {huge_files:,} files / {huge_loc:,} LOC")
     else:
         policy = "selective"
         over = []
-        if source_files > threshold_files:
+        if source_files > threshold_files >= 0:
             over.append(f"files: {source_files} > {threshold_files}")
-        if source_loc > threshold_loc:
+        if source_loc > threshold_loc >= 0:
             over.append(f"LOC: {source_loc:,} > {threshold_loc:,}")
-        policy_why = "; ".join(over)
+        policy_why = "; ".join(over) if over else \
+            "size tiers unmeasurable (fast mode: LOC not read)"
 
     if as_json:
         out = {
@@ -460,6 +517,9 @@ def cmd_sweep(root: Path, depth: int, as_json: bool,
                 "source_loc": source_loc,
                 "threshold_files": threshold_files,
                 "threshold_loc": threshold_loc,
+                "huge_files": huge_files,
+                "huge_loc": huge_loc,
+                "fast_mode": not read_loc,
                 "reason": policy_why,
             },
         }
@@ -468,8 +528,13 @@ def cmd_sweep(root: Path, depth: int, as_json: bool,
 
     parts: list[str] = []
     parts.append(f"# Sweep: {root.name}\n")
+    fast_note = ""
+    if not read_loc:
+        why = "auto: >30k files" if auto_no_loc else "forced via --no-loc"
+        fast_note = (f" · **fast mode: LOC not read** ({why}; counts + tags stay 100% — "
+                     "size-tier verdicts unavailable, policy = selective)")
     parts.append(f"**{n} files · {total_loc:,} LOC · {len(lang_files)} languages · "
-                 f"coverage: 100% of repo enumerated**\n")
+                 f"coverage: 100% of repo enumerated{fast_note}**\n")
 
     parts.append("\n## Deep-read policy\n")
     if policy == "full-read":
@@ -477,6 +542,16 @@ def cmd_sweep(root: Path, depth: int, as_json: bool,
                      f"The sweep proved it affordable: {policy_why}. "
                      "Generated/vendored trees stay swept-only; tests/docs/config follow "
                      "their normal rules.")
+    elif policy == "selective-huge":
+        parts.append(f"**SELECTIVE-HUGE** — too big for standard selective depth "
+                     f"({policy_why}). Sweep breadth stays 100% (non-negotiable), but "
+                     "depth must be concentrated: pick **1–3 deep zones** (goal-aligned "
+                     "subsystems — high fan-in × focus score) and deep-read only those; "
+                     "everything else is breadth-only (structure + seams + load-bearing "
+                     "config, no file interiors). Ask the user to choose zones if the "
+                     "goal is broad. Coverage ledger records the partition: zone paths "
+                     "earn full/skimmed; the rest record `breadth-only`. Report §1 "
+                     "carries a Scope & confidence statement; claims must not exceed it.")
     else:
         parts.append(f"**SELECTIVE** — deep reads follow hypothesis value, not file order "
                      f"({policy_why}). Sweep breadth stays mandatory; the coverage ledger "
@@ -782,8 +857,13 @@ def _query_tokens(query: str) -> tuple[list[str], set[str]]:
 
 
 def score_against_query(text: str, rel: PurePosixPath, qtoks: list[str],
-                        qset: set[str]) -> dict:
-    """Score one file's text + path against the stemmed query set."""
+                        qset: set[str], body: bool = True) -> dict:
+    """Score one file's text + path against the stemmed query set.
+
+    body=False (fast mode) skips full-body tokenization — the expensive pass —
+    and scores path/name + symbol + opening-15-lines hits only. Rankings get
+    coarser; that's the tradeoff on huge repos.
+    """
     path_toks = [p for part in rel.parts for p in _tokenize(part)]
 
     # read once: index lines, walk tokens
@@ -793,9 +873,11 @@ def score_against_query(text: str, rel: PurePosixPath, qtoks: list[str],
     body_counts: dict[str, int] = {}
     sym_rxs = (re.compile(r"^\s*(?:async\s+)?(?:def|fn|func(?:tion)?)\s+(\w+)"),
                re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)"))
+    body_cap = None if body else 15
     for i, line in enumerate(lines):
-        for tok in _tokenize(line):
-            body_counts[_stem(tok)] = body_counts.get(_stem(tok), 0) + 1
+        if body_cap is None or i < body_cap:
+            for tok in _tokenize(line):
+                body_counts[_stem(tok)] = body_counts.get(_stem(tok), 0) + 1
         if i < 15 and len(head_hits) < 3:
             if any(_stem(tok) in qset for tok in _tokenize(line)):
                 head_hits.append(line.strip()[:80])
@@ -804,7 +886,8 @@ def score_against_query(text: str, rel: PurePosixPath, qtoks: list[str],
                 if _stem(m.group(1).lower()) in qset:
                     sym_hits.add(m.group(1))
     body_hits = sorted({t for t in qtoks if _stem(t) in body_counts})
-    path_hits = sorted({t for t in path_toks if _stem(t) in qset})
+    path_score = min(len(path_hits), 3) * 3 if (path_hits := sorted(
+        {t for t in path_toks if _stem(t) in qset})) else 0
 
     # scoring: signal mix matches read-tier ladder —
     #   token coverage (what's inside) + path/name match (what it is) +
@@ -825,14 +908,31 @@ def score_against_query(text: str, rel: PurePosixPath, qtoks: list[str],
 
 
 def cmd_focus(root: Path, query: str, tier: str, top: int,
-              as_json: bool) -> int:
+              as_json: bool, fast: bool | None = None) -> int:
     qtoks, qset = _query_tokens(query)
     if not qtoks:
         print("error: query produced no usable tokens", file=sys.stderr)
         return 1
 
+    # fast mode (auto above FAST_FOCUS_FILES core files): skip full-body
+    # tokenization — a coarse ranking beats a minutes-long scoring pass.
+    FAST_FOCUS_FILES = 2_000
+    if fast is None:
+        wg = (root.rglob("*"))
+        core_files_seen = 0
+        for p0 in wg:
+            if p0.is_dir():
+                continue
+            rel0 = PurePosixPath(p0.relative_to(root))
+            if any(part in SKIP_DIRS or part in NO_LOC_DIRS for part in rel0.parts):
+                continue
+            if primary_disposition(tag_file(rel0, p0.suffix.lower())) in ("source", "design-input"):
+                core_files_seen += 1
+        fast = core_files_seen > FAST_FOCUS_FILES
+    body = not fast
+
     rows: list[dict] = []
-    for p, rel, suffix, tags, loc in walk_repo(root):
+    for p, rel, suffix, tags, loc in walk_repo(root, read_loc=False):
         disp = primary_disposition(tags)
         if tier == "core" and disp not in ("source", "design-input"):
             continue
@@ -848,7 +948,7 @@ def cmd_focus(root: Path, query: str, tier: str, top: int,
             text = p.read_text(errors="replace", encoding="utf-8")
         except OSError:
             continue
-        s = score_against_query(text, rel, qtoks, qset)
+        s = score_against_query(text, rel, qtoks, qset, body=body)
         if s["score"] > 0:
             rows.append({
                 "path": str(rel), "disposition": disp, "loc": loc or 0, **s,
@@ -867,8 +967,11 @@ def cmd_focus(root: Path, query: str, tier: str, top: int,
         return 0
 
     print(f"# Focus: reading order for “{query}”\n")
+    fast_note = (" · **fast mode** (path/symbol/header scoring only — body "
+                 "tokenization skipped; raise --full for the exact pass)"
+                 if fast else "")
     print(f"**Tier:** {tier} · **Files scored > 0:** {n} · "
-          f"**Query terms:** {', '.join(qtoks) or '—'}\n")
+          f"**Query terms:** {', '.join(qtoks) or '—'}{fast_note}\n")
     if not rows:
         print("_No file scored against this query — check terms against the "
               "repo's vocabulary (see glossary/skeleton output)._")
@@ -894,6 +997,209 @@ def cmd_focus(root: Path, query: str, tier: str, top: int,
     return 0
 
 
+# ---------------------------------------------------------------- verify (Phase 7)
+
+# Citation forms the audit recognizes inside a report's text:
+#   path/file.py:123   path/file.py:L123   path/file.py:123-130
+#   `file.py`          <path/file.py>      [path/file.py]
+# Bare `file.py:123` (no directory) is resolved against the repo tree.
+CITE_FILELINE_RX = re.compile(
+    r"`(?P<p1>[A-Za-z0-9_./-]+?):(?P<l1a>\d+)(?:-?(?P<l1b>\d+))?`"   # `a/b.py:12` / `:12-14`
+    r"|(?<![A-Za-z0-9_./-])(?P<p2>[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]*):(?P<l2a>\d+)(?:-?(?P<l2b>\d+))?(?![\d])"
+    r"|(?<![A-Za-z0-9_./-])(?P<p3>[A-Za-z0-9_.-]+\.[A-Za-z0-9]+):(?P<l3a>\d+)(?:-?(?P<l3b>\d+))?(?![\d])")
+CITE_PATH_RX = re.compile(r"`(?P<p>[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
+LINK_RX = re.compile(r"\]\((?P<href>[^)\s]+)\)")
+STAMP_RX = re.compile(r"Generated\s+(?P<date>\d{4}-\d{2}-\d{2}|\w+ \d{1,2},? \d{4}|\d{1,2} \w+ \d{4})"
+                      r"(?:\s+at commit|@|at)?\s+(?P<commit>[0-9a-f]{7,40})?",
+                      re.IGNORECASE)
+
+
+def _candidate_paths(root: Path) -> dict[str, str]:
+    """Basename → posix rel path, first match wins (ties resolved by shortest path)."""
+    index: dict[str, str] = {}
+    for p, rel, *_ in walk_repo(root):
+        name = rel.name
+        if name not in index or len(rel.parts) < len(PurePosixPath(index[name]).parts):
+            index[name] = str(rel)
+    return index
+
+
+def root_all_md(root: Path):
+    """All markdown files under the repo root, excluding vendored/generated trees."""
+    for p, rel, *_ in walk_repo(root):
+        if rel.suffix.lower() in DOCS_EXTS and not any(
+                part in NO_LOC_DIRS or part in SKIP_DIRS for part in rel.parts):
+            yield p
+
+
+def _resolve_cited(root: Path, index: dict[str, str], cited: str) -> tuple[str, str | None]:
+    """Return (status, resolved_rel_or_none). Status: ok / missing."""
+    if cited.startswith("/"):
+        return ("ok", cited[1:]) if (root / cited[1:]).is_file() else ("missing", None)
+    direct = root / cited
+    if direct.is_file():
+        return ("ok", cited)
+    if "/" in cited:            # `dir/file` cited with a different case? try exact only
+        return ("missing", None)
+    return ("ok", index[cited]) if cited in index else ("missing", None)
+
+
+def _line_no(text: str, lineno: int) -> tuple[bool, bool, str]:
+    """Return (line_in_range, is_blank, line_text) for 1-based lineno."""
+    lines = text.splitlines()
+    if 1 <= lineno <= len(lines):
+        lt = lines[lineno - 1]
+        return True, not lt.strip(), lt
+    return False, False, ""
+
+
+def extract_citations(lines: list[str], index: dict[str, str]) -> dict:
+    """Walk the report text and collect every citation, per report section and line."""
+    citations: list[dict] = []
+    paths: set[str] = set()
+    links: list[str] = []
+    stamp: dict | None = None
+    section = ""
+    for i, raw in enumerate(lines, 1):
+        if raw.lstrip().startswith("#"):                       # heading = current section
+            section = raw.lstrip().lstrip("#").strip() or section
+        m = STAMP_RX.search(raw)
+        if m and stamp is None:
+            stamp = {"date": m.group("date"), "commit": m.group("commit") or "", "line": i}
+        for m2 in CITE_FILELINE_RX.finditer(raw):
+            groups = m2.groupdict()
+            path = groups.get("p1") or groups.get("p2") or groups.get("p3")
+            la = groups.get("l1a") or groups.get("l2a") or groups.get("l3a")
+            lb = groups.get("l1b") or groups.get("l2b") or groups.get("l3b")
+            if path and la:
+                citations.append({
+                    "kind": "file:line", "path": path,
+                    "line": int(la), "line_end": int(lb) if lb else None,
+                    "report_line": i, "section": section,
+                })
+        for m2 in CITE_PATH_RX.finditer(raw):
+            pth = m2.group("p")
+            # skip bare URLs / domains (e.g. `example.com`), accept only repo-shaped paths
+            if "/" in pth or pth.endswith(tuple(LANG_BY_EXT)) or pth in MANIFEST_NAMES:
+                paths.add(pth)
+        for m2 in LINK_RX.finditer(raw):
+            href = m2.group("href")
+            if not href.startswith(("http://", "https://", "#", "mailto:")):
+                links.append({"href": href, "report_line": i, "section": section})
+    return {"citations": citations, "paths": sorted(paths), "links": links, "stamp": stamp}
+
+
+def cmd_verify(root: Path, report_paths: list[Path], as_json: bool,
+               show_all: bool) -> int:
+    # Default: the conventional artifacts at repo root (split-mode wiki handled
+    # by passing docs/architecture/ files explicitly or --all auto-discovery).
+    if not report_paths:
+        hits = [root / n for n in ("ARCHITECTURE.md", "PRIOR-ART.md")]
+        report_paths = [h for h in hits if h.is_file()]
+        if not report_paths:
+            wiki = sorted(root.glob("docs/architecture/*.md")) + \
+                   sorted(root.glob("wiki/*.md")) + \
+                   sorted(root.glob("docs/architecture/**/*.md"))
+            report_paths = sorted(set(wiki))
+        if not report_paths:
+            print("error: no report found (looked for ARCHITECTURE.md, "
+                  "PRIOR-ART.md, docs/architecture/*.md) and none passed",
+                  file=sys.stderr)
+            return 1
+
+    index = _candidate_paths(root)
+    findings: list[dict] = []
+    per_report: dict[str, dict] = {}
+    total_cites = 0
+
+    for rp in report_paths:
+        rel_rp = str(rp.relative_to(root)) if rp.is_relative_to(root) else str(rp)
+        if not rp.is_file():
+            findings.append({"report": rel_rp, "kind": "report-missing", "detail": str(rp)})
+            per_report[rel_rp] = {"citations": 0}
+            continue
+        lines = rp.read_text(encoding="utf-8", errors="replace").splitlines()
+        extr = extract_citations(lines, index)
+        rp_findings: list[dict] = []
+        stamp = extr["stamp"]
+        if stamp is None:
+            rp_findings.append({"report": rel_rp, "kind": "stamp-missing",
+                                 "detail": "no 'Generated <date> at commit <hash>' header"})
+        for c in extr["citations"]:
+            status, resolved = _resolve_cited(root, index, c["path"])
+            note = ""
+            if status == "missing":
+                rp_findings.append({"report": rel_rp, "kind": "anchor-missing",
+                                     "detail": f"{c['path']}:{c['line']} — file not in repo"})
+                continue
+            text = (root / resolved).read_text(encoding="utf-8", errors="replace")
+            in_range, is_blank, lt = _line_no(text, c["line"])
+            if not in_range:
+                rp_findings.append({"report": rel_rp, "kind": "line-out-of-range",
+                                     "detail": f"{c['path']}:{c['line']} — file has "
+                                               f"{len(text.splitlines())} lines"})
+                continue
+            if is_blank:
+                rp_findings.append({"report": rel_rp, "kind": "line-blank",
+                                     "detail": f"{c['path']}:{c['line']} — cited line is blank"})
+            if c["line_end"] and not (1 <= c["line_end"] <= len(text.splitlines())):
+                rp_findings.append({"report": rel_rp, "kind": "line-out-of-range",
+                                     "detail": f"{c['path']}:{c['line']}-{c['line_end']} — "
+                                               f"range end beyond EOF"})
+            total_cites += 1
+        for pth in extr["paths"]:
+            status, resolved = _resolve_cited(root, index, pth)
+            if status == "missing":
+                rp_findings.append({"report": rel_rp, "kind": "path-missing",
+                                     "detail": f"`{pth}` cited but not found in repo"})
+        for lk in extr["links"]:
+            href = lk["href"]
+            if href.startswith("#"):                # internal anchor, not a file
+                continue
+            target = root / href.split("#", 1)[0]
+            if not target.exists():
+                rp_findings.append({"report": rel_rp, "kind": "link-broken",
+                                     "detail": f"({href}) at report line {lk['report_line']}"
+                                               f" — target not found"})
+        per_report[rel_rp] = {
+            "citations": len(extr["citations"]),
+            "paths": len(extr["paths"]),
+            "links": len(extr["links"]),
+            "stamp": extr["stamp"],
+            "findings": rp_findings,
+        }
+        findings.extend(rp_findings)
+
+    ok = not findings
+    if as_json:
+        print(json.dumps({
+            "reports": [{"report": k, **{kk: vv for kk, vv in v.items()}} for k, v in per_report.items()],
+            "total_file_line_citations": total_cites,
+            "findings": findings,
+            "passed": ok,
+        }, indent=1))
+    else:
+        print("# Verify: Phase-7 citation audit\n")
+        for k, v in per_report.items():
+            stamp_s = ""
+            if v.get("stamp"):
+                stamp_s = f" · stamped {v['stamp']['date']}" + \
+                          (f" @ {v['stamp']['commit'][:12]}" if v['stamp'].get("commit") else "")
+            print(f"**{k}** — {v.get('citations', 0)} file:line citations · "
+                  f"{v.get('paths', 0)} paths · {v.get('links', 0)} links{stamp_s}")
+        if findings:
+            print("\n**Findings:**\n")
+            for f in findings:
+                print(f"- [{f['kind']}] {f['report']}: {f['detail']}")
+        else:
+            print("\n**Audit clean.** Every citation, path, and link resolves.")
+        if total_cites == 0:
+            print("\n**Zero file:line citations** — a report with no anchors fails "
+                  "the anti-hallucination contract by definition; add evidence or "
+                  "re-run the analysis.")
+    return 0 if ok and total_cites > 0 else 1
+
+
 # ---------------------------------------------------------------- cli
 
 def main() -> int:
@@ -911,6 +1217,17 @@ def main() -> int:
     sp.add_argument("--threshold-loc", type=int, default=50000,
                     help="source LOC at/below which full-read mode triggers "
                          "(default 50000; use --threshold-loc 0 to force selective)")
+    sp.add_argument("--threshold-huge-files", type=int, default=2000,
+                    help="source-file count above which selective-huge mode triggers "
+                         "(default 2000; 0 disables the huge tier)")
+    sp.add_argument("--threshold-huge-loc", type=int, default=500_000,
+                    help="source LOC above which selective-huge mode triggers "
+                         "(default 500000; 0 disables the huge tier)")
+    sp.add_argument("--no-loc", action="store_true",
+                    help="fast enumeration: count + tag every file, never read bytes "
+                         "(auto-enabled above 30k files; imply no size-tier verdicts)")
+    sp.add_argument("--loc", action="store_true",
+                    help="force per-file LOC reads even above the 30k auto cutoff")
 
     sp = sub.add_parser("langs", help="language census")
     sp.add_argument("root", type=Path)
@@ -928,6 +1245,22 @@ def main() -> int:
                     help="core = source + design-input only (default); all = every readable file")
     sp.add_argument("--top", type=int, default=25, help="rows to show (default 25)")
     sp.add_argument("--json", action="store_true")
+    fast_group = sp.add_mutually_exclusive_group()
+    fast_group.add_argument("--fast", action="store_true", default=None,
+                            help="score path/symbol/header hits only — skip body "
+                                 "tokenization (auto-enabled above 2k core files)")
+    fast_group.add_argument("--full", dest="fast", action="store_false",
+                            help="force the exact (body-tokenized) scoring pass")
+
+    sp = sub.add_parser("verify", help="Phase-7 citation audit: check the draft report's "
+                                       "file:line anchors, cited paths, and links against the repo")
+    sp.add_argument("root", type=Path)
+    sp.add_argument("report", nargs="*", type=Path,
+                    help="report file(s); default: ARCHITECTURE.md | PRIOR-ART.md | "
+                         "docs/architecture/*.md at repo root")
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--all", action="store_true",
+                    help="auto-discover all markdown reports under the repo root")
 
     for name in ("skeleton", "ablation"):
         sp = sub.add_parser(name)
@@ -943,12 +1276,27 @@ def main() -> int:
         print(f"error: {args.root} is not a directory", file=sys.stderr)
         return 1
     if args.cmd == "sweep":
+        loc_mode = "no-loc" if args.no_loc else ("loc" if args.loc else "auto")
+        if args.no_loc and args.loc:
+            print("error: --no-loc and --loc are mutually exclusive", file=sys.stderr)
+            return 1
         return cmd_sweep(args.root, args.depth, args.json,
-                         args.threshold_files, args.threshold_loc)
+                         args.threshold_files, args.threshold_loc,
+                         args.threshold_huge_files, args.threshold_huge_loc,
+                         loc_mode)
     if args.cmd == "langs":
         return cmd_langs(args.root)
     if args.cmd == "focus":
-        return cmd_focus(args.root, args.query, args.tier, args.top, args.json)
+        return cmd_focus(args.root, args.query, args.tier, args.top, args.json,
+                         args.fast)
+    if args.cmd == "verify":
+        reports = args.report
+        if args.all:
+            reports = [p for p in root_all_md(args.root)]
+            if not reports:
+                print("error: --all found no markdown reports", file=sys.stderr)
+                return 1
+        return cmd_verify(args.root, reports, args.json, args.all)
     if args.cmd == "skeleton":
         return cmd_skeleton(args.root, args.lang)
     target = getattr(args, "symbol", None) or getattr(args, "module", None)

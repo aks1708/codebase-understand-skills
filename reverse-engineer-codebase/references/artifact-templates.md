@@ -22,8 +22,21 @@ The reader is an **engineer or software architect studying prior art**. Both tem
 # Architecture: <project name>
 
 > Generated <date> at commit <short-hash on <branch>>. Method: full sweep + hypothesis-driven layered probing (see SKILL.md). A study doc, not live tooling — re-run to refresh.
+> Verified: citation audit (`analyze.py verify`) exit 0 at commit <short-hash>; claims re-probed per Phase 7.
 > Audience: engineers and architects studying prior art.
 > Claims marked (inferred) are unconfirmed reasoning; all other claims trace to evidence.
+
+## 0. What you asked for
+<The user's goal from Step -1, one to three lines, close to their own words.
+It drives report emphasis and is the lens input downstream tools read —
+stated, never paraphrased away.>
+
+## 0b. Scope & confidence            (SELECTIVE-HUGE runs only — omit otherwise)
+<3 lines: (1) the deep zones named by the user or auto-picked and why; (2) what
+breadth-only means here — swept, classified, seams mapped from structure + ops
+surfaces, file interiors unread; (3) the confidence boundary: claims about
+zone components are depth-verified, claims about the rest are structural.
+Matches the coverage ledger's deep-read column exactly.>
 
 ## 1. What it is
 <One paragraph, plain language. Written from surviving hypotheses only.>
@@ -134,9 +147,9 @@ disposition (core / interface-adapter / support-util / test / config-ops /
 schema-migration / generated / vendored / docs / data-fixture / asset /
 dead-suspect), deep-read status, note. Every top-level path appears; the
 unclassified bucket is empty or justified. Source: `analyze.py sweep`.
-State the sweep's deep-read policy verdict: in FULL-READ mode (small repos)
-every source path shows `full`; in SELECTIVE mode the column records what
-each path earned.>
+State the sweep's deep-read policy verdict: FULL-READ — every source path
+`full`; SELECTIVE — earned per path; SELECTIVE-HUGE — zone paths with their
+tier, everything else explicit `breadth-only` (matches §0b).>
 ```
 
 ---
@@ -147,6 +160,17 @@ For when the goal is "what can I steal from this?" rather than "what is this?"
 
 ```markdown
 # Prior-art study: <project name>
+
+> Generated <date> at commit <short-hash on <branch>>. Method: full sweep + hypothesis-driven layered probing (see SKILL.md). A study doc, not live tooling — re-run to refresh.
+> Verified: citation audit (`analyze.py verify`) exit 0 at commit <short-hash>; claims re-probed per Phase 7.
+
+## 0. What you asked for
+<The user's goal from Step -1, one to three lines — usually the "what can I
+steal" framing. Same contract as Template A: stated, not paraphrased away.>
+
+## Scope & confidence                (SELECTIVE-HUGE runs only — omit otherwise)
+<Same 3-line contract as Template A §0b: deep zones, what breadth-only covered,
+where confidence ends. Matches the coverage ledger.>
 
 ## The problem it really solves
 <Strip away the marketing. From the dependency manifest + code, what domains
@@ -193,22 +217,20 @@ One paragraph. This is the payoff of the whole exercise.>
 ## Appendix: Coverage ledger
 <Same contract as Template A: full-sweep table, 100% of paths accounted for,
 with the deep-read policy verdict stated (FULL-READ: all source paths `full`;
-SELECTIVE: earned per path).>
+SELECTIVE: earned per path; SELECTIVE-HUGE: zones + `breadth-only` rest,
+matching Scope & confidence).>
 ```
 
 ---
 
 ## Notes on writing quality
 
-- **Every architecture claim cites evidence** (file:line, commit, grep count) unless explicitly marked (inferred). This is the report's anti-hallucination contract.
-- **The critical path trace is the heart of Template A.** A reader who follows it should be able to retrace the flow themselves without re-doing the analysis. It is a flow story about one worked instance with values at every hop — not a list of file references.
-- **The seams table is what makes it a wiring study, not a parts catalog.** Component inventory says what the boxes are; the seams table says how they are strung together — transport, contract owner, coupling direction, error semantics per edge. A system designer reads §3b first.
-- **The system design mapping is what makes it a study document.** Component names without roles and decisions without tradeoffs are inventory, not insight.
+The contracts above inherit from SKILL.md and are not restated here: evidence-cited claims with `(inferred)` markers, Phase-7 verification before shipping, the worked instance carried end to end, the seams table, design roles + tradeoffs for every finding, and the coverage ledger as trust anchor. Template-writing-specific notes:
+
 - **"Deviations from convention" is the highest-insight section.** Convention = what any competent team would do; deviation = what *this* team knew that others don't (or a mistake — the distinction goes in the evidence column).
 - **"The one big idea" is the payoff of Template B.** If you can't write it, the analysis hasn't converged yet — go back to probing.
-- **The coverage ledger is the trust anchor.** If a top-level path is missing from the appendix, the report is incomplete by definition.
 - Don't pad. A converged 6-page artifact with full coverage beats a 20-page summary of file listings.
-- Diagrams: prefer Mermaid (graph, sequenceDiagram) rendered from the design mapping; fall back to ASCII when the diagram would be unwieldy. Keep them under ~30 lines. Arrows labeled with the seam ("fetches via gRPC [network] · proto owned by payments/"), never bare "→". Every nontrivial diagram is followed by a Sources line.
+- Diagrams: fall back to ASCII when the diagram would be unwieldy; every nontrivial diagram is followed by a Sources line.
 - **Per-section Sources lines** (DeepWiki's citation habit): any section whose claims span multiple subsystems ends with a `> **Sources:** ...` line gathering its file:line citations. Inline citations stay inline; the Sources line inoculates against confident hallucination by making a section's evidence base auditable at a glance.
 - A report older than the current HEAD is a snapshot — that's fine, but the header says so; users re-run the skill rather than hand-editing a stale artifact.
 
@@ -234,4 +256,4 @@ Rules:
 - The running order above is a default, not a cage — subsections migrate between files to fit the repo (e.g. diagram types go in one file, deployment in another).
 - The coverage ledger (full table) lives in `README.md` or its own file; it never gets dropped in split mode.
 - Every cross-file reference is a relative link; each file opens by naming its scope.
-- Recommended for repos over ~2-3k LOC; mandatory only by user request.
+- Recommended when the single-file report would exceed the ~500-line trigger (SKILL.md Phase 6) — typically the larger SELECTIVE repos; mandatory only by user request.
