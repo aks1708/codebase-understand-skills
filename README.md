@@ -1,6 +1,6 @@
 # Codebase Understanding Skills
 
-Two opencode skills that turn any repository into a system design study — one analyzes the codebase, the other teaches what the analysis found. The approach takes inspiration from the [ArchAgent paper](https://arxiv.org/pdf/2602.22425) (Gupta et al.).
+Agent skills that turn any repository into a system design study — one analyzes the codebase, the other teaches what the analysis found. The approach takes inspiration from the [ArchAgent paper](https://arxiv.org/pdf/2602.22425) (Gupta et al.).
 
 ```
 reverse-engineer-codebase     ───▶     teach-architecture
