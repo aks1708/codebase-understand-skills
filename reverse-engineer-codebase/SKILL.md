@@ -5,7 +5,7 @@ description: Systematically reverse engineer a single codebase (one repository),
 
 # Reverse Engineering a Codebase
 
-Method (after ArchAgent, Gupta et al.): hypothesis → falsifiable probe → keep only what survives. The search space is the **entire repo**, enumerated by a full sweep, then probed by depth.
+Method: hypothesis → falsifiable probe → keep only what survives. The search space is the **entire repo**, enumerated by a full sweep, then probed by depth.
 
 Tools (in this skill's directory, Python 3 stdlib only): `scripts/orient.py` (Phase 0) and `scripts/analyze.py` — `sweep` `langs` `skeleton` `ablation` `trace` `focus` `verify`. They are the cheap-probe engines; learn each one's flags from `--help`. Git is required for history probes; if missing, read files directly and note it.
 
@@ -31,7 +31,7 @@ Use the goal everywhere: it becomes report §0 and sets which sections get depth
 
 ## Scope: exactly one repository
 
-Everything runs inside the repo the user pointed at. Other repos appearing in it (manifest deps, submodules, vendored forks, URLs) are **interfaces, not targets** — record the contract, never read their code. Vendored/monorepo packages inside the repo count as repo. If an answer truly needs the other repo's internals → Open questions, dependency named, move on.
+Everything runs inside the repo the user pointed at. Other repos appearing in it (manifest deps, submodules, vendored forks, URLs) are **interfaces, not targets** — record the contract, never read their code. Vendored/monorepo packages inside the repo count as repo. If an answer truly needs the other repo's internals → Open questions, dependency named, move on. The repo the user pointed at is also the authorization boundary: analyze only it, cite its code as `file:line` rather than pasting it wholesale, and don't ship the report's contents anywhere without asking.
 
 ## Coverage contract: sweep everything, always
 
@@ -48,7 +48,7 @@ Dispositions: `core` · `interface-adapter` · `support-util` · `test` · `conf
 
 - **FULL-READ** — source files ≤ 100 *and* source LOC ≤ 50k (flags: `--threshold-files/--threshold-loc`). Read **every source file in full** before synthesis; every `source` ledger path is `full` by definition. Generated/vendored stay swept-only; manifests, migrations, design inputs read per their own rules.
 - **SELECTIVE** — above those thresholds. Deep reads follow hypothesis value: critical-path files, high fan-in, load-bearing config. Ledger records `none`/`skimmed`/`analytical`/`full` as earned (`analytical` = a full read answering one named question — see `references/probing.md`).
-- **SELECTIVE-HUGE** — source files > 2,000 *or* source LOC > 500k (flags: `--threshold-huge-files/--threshold-huge-loc`, 0 disables). Too big for even selective depth. Sweep stays 100%; concentrate depth: pick **1–3 deep zones** (goal-aligned subsystems: high fan-in × focus score × goal fit), deep-read only those, everything else **breadth-only** (structure, seams, load-bearing config/migrations — no file interiors). Zones come from the user (conditional scope question) or auto-pick; the partition goes in the coverage ledger; report §1 carries a Scope & confidence statement; claims must not exceed it.
+- **SELECTIVE-HUGE** — source files > 2,000 *or* source LOC > 500k (flags: `--threshold-huge-files/--threshold-huge-loc`, 0 disables). Too big for even selective depth. Sweep stays 100%; concentrate depth: pick **1–3 deep zones** (goal-aligned subsystems: high fan-in × focus score × goal fit), deep-read only those, everything else **breadth-only** (structure, seams, load-bearing config/migrations — no file interiors). Zones come from the user (conditional scope question) or auto-pick; the partition goes in the coverage ledger; report §0b carries a Scope & confidence statement; claims must not exceed it.
 
 On repos > 30k files the sweep auto-runs in fast mode (counts + tags at 100%, LOC skipped — size tiers unmeasurable, policy floors to selective); `--loc`/`--no-loc` force either mode. Scope expensive probes by pointing them at a zone: `analyze.py skeleton <zone-dir>` works — root is just a path.
 
@@ -103,8 +103,9 @@ python3 scripts/analyze.py focus <repo-root> "<goal as stated>" [--tier core|all
 
 1. **Layer 1 (seconds):** README, manifests, `git log`, directory names — what problem does this solve?
 2. **Layer 2 (minutes):** `analyze.py skeleton` — classes, functions, imports, routes. **FULL-READ gate:** replace grep-outlining by reading every source file in full, seam-first (entry points and handoffs lead; interiors get classification). SELECTIVE-HUGE gate: skip files outside the deep zones entirely — their skeleton entry is the analysis.
-3. **Layer 3 (minutes, the most expensive and most reliable probe):** trace one representative request end to end — handler → service → repo → DB, seeded from `focus`. Read only those files in full. Carry **one worked instance** (concrete request, sample values) and record per hop: `file:line`, responsibility assumed, data shape in/out with the instance's values, failure behavior (swallowed/propagated/retried/crashed). Output = a **flow story about the worked instance**, not a file list. In SELECTIVE/SELECTIVE-HUGE, whole-file reads are for the traced path only.
-4. **Layer 4 (as needed):** ablation reading — for each surviving teleological hypothesis, find and check the one file or commit that would disprove it.
+3. **Layer 3 (minutes, the most expensive and most reliable probe):** trace one representative request end to end — handler → service → repo → DB, seeded from `focus`. Read only those files in full. Carry **one worked instance** (concrete request, sample values) and record per hop: `file:line`, responsibility assumed, data shape in/out with the instance's values, failure behavior (swallowed/propagated/retried/crashed). Output = a **flow story about the worked instance**, not a file list. In SELECTIVE/SELECTIVE-HUGE, whole-file reads are for the traced path only. This samples representative paths, not path conditions — full enumeration is undecidable and pointless at architecture altitude; the contrasting flow is what keeps the sample honest.
+4. **Layer 3b (optional, when the repo runs):** dynamic probes — the one evidence class static reading cannot fake. If the repo starts cheaply and safely (deps install, no external services, user OK with executing it): run the test suite and record the pass/fail shape; `docker compose config` to check the inferred runtime topology; one smoke request through the traced flow. Sandboxed (container or throwaway dir), never against real data or third-party networks. Tag the evidence `runtime`; a runtime-behavior claim with no runtime evidence keeps its `(inferred)` tag (Phase 7b checks). Repo doesn't run or shouldn't be run → skip the layer, nothing else changes; if a runtime claim then matters, say so in Open questions.
+5. **Layer 4 (as needed):** ablation reading — for each surviving teleological hypothesis, find and check the one file or commit that would disprove it.
 
 **Deep reads are connection-shaped, not file-shaped.** The unit of study is the seam: an entry point, a handoff, a data-shape change, a state transition. When a read hits a seam, answer four questions — what crosses, in what shape, what breaks if the other side fails, who owns the contract. Everything else in the file can be skimmed.
 
@@ -141,6 +142,7 @@ Answer the architect's questions with evidence — every row cites `file:line`/c
 | Component roles | Gateway / orchestrator / domain core / persistence / cache / queue / worker / library? | fan-in/fan-out, import direction |
 | Data flow | Sync or async? Transports? Where do data shapes change? | seams (Phase 2b) + critical path trace |
 | State & storage | Which stores? Schemas? Consistency? Idempotency? Transactions? | migrations, schema files, transaction code |
+| Entity lifecycles | What states can the core entity take? Transitions, guards, who enforces them? | enums/status fields, transition guards, state columns in migrations |
 | Scalability | What scales horizontally? Singletons/leaders/bottlenecks? Locks, global state? | stateful components, locks, caches |
 | Failure modes | Retries? Timeouts? Circuit breakers? Backpressure? DLQs? Health checks? | grep probes in error paths |
 | Trust boundaries | Where do requests enter? Authn/authz? Secrets? | middleware, config, network layout |
@@ -194,7 +196,7 @@ python3 scripts/analyze.py verify <repo-root> [report ...] [--json]
 # default discovery: ARCHITECTURE.md | PRIOR-ART.md | docs/architecture/*.md
 ```
 
-Checks every `file:line` anchor, cited path, cross-link, and the stamp against the repo. Findings: `anchor-missing`, `line-out-of-range`, `line-blank`, `path-missing`, `link-broken`, `stamp-missing`, zero citations (fails by definition). **Exit 1 = does not ship.** Fix by re-locating the real anchor in the code — never by deleting the citation — and re-run until exit 0. Split-mode wikis are audited file-by-file.
+Checks every `file:line` anchor, cited path, cross-link, and the stamp against the repo. Findings: `anchor-missing`, `line-out-of-range`, `line-blank`, `path-missing`, `link-broken`, `stamp-missing`, `stamp-commit-missing`, `commit-unknown` (the stamp's hash must name a real commit in this repo), zero citations (fails by definition). **Exit 1 = does not ship.** Fix by re-locating the real anchor in the code — never by deleting the citation — and re-run until exit 0. Split-mode wikis are audited file-by-file.
 
 ### 7b. Cold-eyes claim re-probe
 
@@ -206,7 +208,7 @@ The audit proves the address exists; only re-reading proves the claim lives ther
 4. **Scope consistency (SELECTIVE-HUGE):** claims about breadth-only components must stay structural; depth-verified behavior is claimed only inside zones. Check §0b matches the coverage ledger's partition.
 5. **Inference discipline:** `(inferred)` still unconfirmed (or upgrade + cite); assertions without evidence or `(inferred)` get downgraded or deleted. No claim may re-assert a Refuted ledger row.
 
-Every 7b fix goes back through 7a — the audit runs clean on the final text, no exceptions. **Done = ledgers converged ∧ `verify` exit 0 on final text ∧ 7b complete.** "Is this report verified?" must be answerable "yes, exit 0 at commit X."
+Every 7b fix goes back through 7a — the audit runs clean on the final text, no exceptions. Close by writing the numbers into the report's Verified line: citations audited, findings fixed, claims re-probed. **Done = ledgers converged ∧ `verify` exit 0 on final text ∧ 7b complete.** "Is this report verified?" must be answerable "yes, exit 0 at commit X."
 
 ## Anti-patterns
 

@@ -29,7 +29,9 @@ The ledger forces hypotheses to be:
 | Type | structural / causal / teleological (why-did-they-build-it-this-way) |
 | Probe | The cheapest concrete command or file read that could change its status |
 | Status | Candidate → Surviving or Refuted (Question = probe not yet run) |
-| Evidence | file:line, commit hash, or grep count that produced the current status |
+| Evidence | file:line, commit hash, or grep count that produced the current status, tagged `static` / `history` / `runtime` |
+
+Every Evidence entry carries its class: **`static`** (read from code/config), **`history`** (git), **`runtime`** (executed — SKILL.md Phase 2, Layer 3b). A claim about runtime behavior that rests on static or history evidence alone stays (inferred) until a runtime probe confirms it — Phase 7b checks exactly this.
 
 Keep the hypothesis ledger in your working notes. When a hypothesis is promoted to Surviving, its evidence should appear in the report. Refuted hypotheses generate the "Deviations from convention" section.
 

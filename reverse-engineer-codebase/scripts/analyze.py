@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 from collections import Counter
@@ -59,19 +60,26 @@ LANG_PATTERNS: dict[str, dict] = {
         "class": r"^\s*class\s+(\w+)",
         "func": r"^\s*(?:async\s+)?def\s+(\w+)",
         "import": r"^\s*(?:from\s+([\w\.]+)\s+import|import\s+([\w\.]+))",
+        # decorator routes: FastAPI @app.get / @router.post, Flask @app.route / @bp.route
+        "route": r"@\w+\.(get|post|put|delete|patch|route)\(",
     },
     "ts": {
         "extension": [".ts", ".tsx"],
         "class": r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)",
-        "func": r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)",
+        # named functions + arrow-const exports (the dominant handler style)
+        "func": r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)"
+                r"|^\s*(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?[^;\n]*=>",
         "import": r"^\s*import\s+.*from\s+['\"]([^'\"]+)['\"]",
         "route": r"@?(?:Get|Post|Put|Delete|Patch)?\s*(?:app|router)\.(get|post|put|delete|patch)\(",
     },
     "js": {
-        "extension": ".js",
+        "extension": [".js", ".jsx", ".mjs", ".cjs"],
         "class": r"^\s*(?:export\s+)?class\s+(\w+)",
-        "func": r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)",
-        "import": r"(?:require\(['\"]([^'\"]+)['\"]\)|import\s+.*from\s+['\"]([^'\"]+)['\"])",
+        "func": r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)"
+                r"|^\s*(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?[^;\n]*=>",
+        "import": r"^\s*(?:[\w$.]+\s*=\s*)?require\(['\"]([^'\"]+)['\"]\)"
+                  r"|^\s*import\s+.*from\s+['\"]([^'\"]+)['\"]"
+                  r"|^\s*import\s+['\"]([^'\"]+)['\"]",
         "route": r"(?:app|router)\.(get|post|put|delete|patch)\(",
     },
     "go": {
@@ -550,7 +558,7 @@ def cmd_sweep(root: Path, depth: int, as_json: bool,
                      "everything else is breadth-only (structure + seams + load-bearing "
                      "config, no file interiors). Ask the user to choose zones if the "
                      "goal is broad. Coverage ledger records the partition: zone paths "
-                     "earn full/skimmed; the rest record `breadth-only`. Report §1 "
+                     "earn full/skimmed; the rest record `breadth-only`. Report §0b "
                      "carries a Scope & confidence statement; claims must not exceed it.")
     else:
         parts.append(f"**SELECTIVE** — deep reads follow hypothesis value, not file order "
@@ -684,7 +692,9 @@ def iter_source(root: Path, langs: list[str]):
 
 def compile_patterns(lang: str, kinds: list[str]):
     pats = LANG_PATTERNS[lang]
-    return {k: re.compile(pats[k]) for k in kinds if pats.get(k)}
+    # re.MULTILINE: the ^-anchored patterns are applied to whole-file text —
+    # without it they only ever match line 1 (the line-1 blindness bug).
+    return {k: re.compile(pats[k], re.MULTILINE) for k in kinds if pats.get(k)}
 
 
 def _first_group(m: re.Match) -> str:
@@ -705,10 +715,8 @@ def cmd_skeleton(root: Path, lang_name: str) -> int:
     routes: list[str] = []
     file_count = 0
 
-    import_rxs = []
-    for lang in langs:
-        pats = LANG_PATTERNS[lang]
-        import_rxs.append(re.compile(pats["import"]))
+    import_rxs = {lang: re.compile(LANG_PATTERNS[lang]["import"], re.MULTILINE)
+                  for lang in langs}
 
     for p in iter_source(root, langs):
         file_count += 1
@@ -716,19 +724,20 @@ def cmd_skeleton(root: Path, lang_name: str) -> int:
             text = p.read_text(errors="replace")
         except OSError:
             continue
-        for lang in langs:
-            pats = compile_patterns(lang, ["class", "func", "route"])
-            for m in pats["class"].finditer(text):
-                classes[m.group(1)] += 1
-            for m in pats["func"].finditer(text):
-                funcs[m.group(1)] += 1
-            for m in pats.get("route", _NO_MATCH).finditer(text):
-                routes.append(f"{p.relative_to(root)}: {m.group(0).strip()[:80]}")
-        for rx in import_rxs:
-            for m in rx.finditer(text):
-                val = _first_group(m)
-                if val:
-                    imports[val] += 1
+        # each file is parsed with its OWN language's patterns only — running
+        # every language over every file double-counts shared idioms
+        lang = LANG_BY_EXT[p.suffix]
+        pats = compile_patterns(lang, ["class", "func", "route"])
+        for m in pats["class"].finditer(text):
+            classes[_first_group(m)] += 1
+        for m in pats["func"].finditer(text):
+            funcs[_first_group(m)] += 1
+        for m in pats.get("route", _NO_MATCH).finditer(text):
+            routes.append(f"{p.relative_to(root)}: {m.group(0).strip()[:80]}")
+        for m in import_rxs[lang].finditer(text):
+            val = _first_group(m)
+            if val:
+                imports[val] += 1
 
     print(f"# Skeleton (langs: {', '.join(langs)}, {file_count} files)\n")
     if routes:
@@ -756,9 +765,11 @@ def cmd_skeleton(root: Path, lang_name: str) -> int:
 
 def cmd_ablation(root: Path, module: str, lang_name: str) -> int:
     langs = detect_langs(root, lang_name)
-    import_rxs = [re.compile(LANG_PATTERNS[l]["import"]) for l in langs]
+    import_rxs = {lang: re.compile(LANG_PATTERNS[lang]["import"], re.MULTILINE)
+                  for lang in langs}
     sym_rx = re.compile(
-        r"^\s*from\s+[\w\.]+\s+import\s+([^\(\)#\n]+)"   # python: from X import a, b
+        r"^\s*from\s+[\w\.]+\s+import\s+([^\(\)#\n]+)",   # python: from X import a, b
+        re.MULTILINE,
     )
     importers: list[tuple[Path, str]] = []
     mentions: list[Path] = []
@@ -770,15 +781,10 @@ def cmd_ablation(root: Path, module: str, lang_name: str) -> int:
             continue
         if module in text:
             mentions.append(p)
-        for rx in import_rxs:
-            matched = False
-            for m in rx.finditer(text):
-                val = _first_group(m)
-                if module and module in val:
-                    importers.append((p, val))
-                    matched = True
-                    break
-            if matched:
+        for m in import_rxs[LANG_BY_EXT[p.suffix]].finditer(text):
+            val = _first_group(m)
+            if module and module in val:
+                importers.append((p, val))
                 break
         if any(imp.strip() == module for imp in sym_rx.findall(text)):
             importers.append((p, f"from ... import {module}"))
@@ -1125,6 +1131,25 @@ def cmd_verify(root: Path, report_paths: list[Path], as_json: bool,
         if stamp is None:
             rp_findings.append({"report": rel_rp, "kind": "stamp-missing",
                                  "detail": "no 'Generated <date> at commit <hash>' header"})
+        elif (root / ".git").exists():
+            # the hash must name a real commit in THIS repo — a stale or
+            # invented hash looks identical to a fresh one from outside the text
+            if not stamp.get("commit"):
+                rp_findings.append({"report": rel_rp, "kind": "stamp-commit-missing",
+                                     "detail": "stamp lacks a commit hash — "
+                                               "'Generated <date> at commit <hash>' required"})
+            else:
+                try:
+                    probe = subprocess.run(
+                        ["git", "cat-file", "-e", f"{stamp['commit']}^{{commit}}"],
+                        cwd=root, capture_output=True, timeout=15)
+                    if probe.returncode != 0:
+                        rp_findings.append({"report": rel_rp, "kind": "commit-unknown",
+                                             "detail": f"stamp commit "
+                                                       f"{stamp['commit'][:12]} is not "
+                                                       "a commit in this repo"})
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass    # git absent: hash validation skipped, presence still enforced
         for c in extr["citations"]:
             status, resolved = _resolve_cited(root, index, c["path"])
             note = ""

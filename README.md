@@ -1,6 +1,6 @@
 # Codebase Understanding Skills
 
-Agent skills that turn any repository into a system design study — one analyzes the codebase, the other teaches what the analysis found. The approach takes inspiration from the [ArchAgent paper](https://arxiv.org/pdf/2602.22425) (Gupta et al.).
+Agent skills that turn any repository into a system design study — one analyzes the codebase, the other teaches what the analysis found.
 
 ```
 reverse-engineer-codebase     ───▶     teach-architecture
@@ -18,9 +18,10 @@ Reverse engineer one repository into an evidence-bound architecture study.
 - **Sweep everything.** 100% of the repo is enumerated and classified — config, migrations, and scripts often hold the *factual* architecture.
 - **Deep reads follow the sweep's verdict.** Small repos get every source file read; large repos get hypothesis-driven depth; huge repos (>2k files / >500k LOC) concentrate depth into 1–3 user-chosen deep zones, everything else breadth-only — with the scope stated in the report.
 - **Hypothesis-driven depth.** Falsifiable theories about design intent are probed with cheap evidence; refuted hypotheses are as valuable as confirmed ones. Deep reads are spent only where they earn insight.
+- **Runtime evidence when the repo runs.** Optional sandboxed dynamic probes — run the test suite, `docker compose config`, one smoke request — supply the one evidence class static reading can't fake; evidence is classed `static` / `history` / `runtime`, and runtime claims without runtime evidence stay `(inferred)`.
 - **Seams over files.** The unit of study is the connection — how components tie together (transport, contract, coupling, error semantics), not file interiors.
 - **Map to system design.** Every component gets a role (gateway, orchestrator, persistence, ...), every decision names its tradeoff, and every claim cites `file:line` or is marked `(inferred)`.
-- **Verify the report.** A mandatory second pass audits the draft against the codebase — every `file:line` anchor, path, and link mechanically checked (`analyze.py verify`), and the load-bearing claims re-probed cold before the report ships.
+- **Verify the report.** A mandatory second pass audits the draft against the codebase — every `file:line` anchor, path, link, and freshness stamp mechanically checked, the commit hash validated against the repo's git history (`analyze.py verify`), and the load-bearing claims re-probed cold before the report ships.
 
 **Output:** `ARCHITECTURE.md` (or `PRIOR-ART.md` / `docs/architecture/` wiki) — system map, component inventory, critical-path trace, decision rationale, lessons, and a coverage ledger proving the full sweep. Bundled scripts: `orient.py` and `analyze.py` (Python 3, stdlib only).
 
@@ -45,7 +46,7 @@ Turn an existing report into an interactive terminal lesson. The report is the s
 | | reverse-engineer-codebase | teach-architecture |
 |---|---|---|
 | **Role** | Analyst | Teacher |
-| **Input** | A repo + a goal | A report + a lens |
+| **Input** | A repo + a goal | A report (the lens is derived from it) |
 | **Output** | Study document on disk | Live lesson in the conversation |
 | **Register** | Experienced engineer | First principles |
 

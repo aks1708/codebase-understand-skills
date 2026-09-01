@@ -22,7 +22,7 @@ The reader is an **engineer or software architect studying prior art**. Both tem
 # Architecture: <project name>
 
 > Generated <date> at commit <short-hash on <branch>>. Method: full sweep + hypothesis-driven layered probing (see SKILL.md). A study doc, not live tooling — re-run to refresh.
-> Verified: citation audit (`analyze.py verify`) exit 0 at commit <short-hash>; claims re-probed per Phase 7.
+> Verified: citation audit (`analyze.py verify`) exit 0 at commit <short-hash> — <N> citations audited, <M> findings fixed; <K> claims re-probed per Phase 7.
 > Audience: engineers and architects studying prior art.
 > Claims marked (inferred) are unconfirmed reasoning; all other claims trace to evidence.
 
@@ -162,7 +162,7 @@ For when the goal is "what can I steal from this?" rather than "what is this?"
 # Prior-art study: <project name>
 
 > Generated <date> at commit <short-hash on <branch>>. Method: full sweep + hypothesis-driven layered probing (see SKILL.md). A study doc, not live tooling — re-run to refresh.
-> Verified: citation audit (`analyze.py verify`) exit 0 at commit <short-hash>; claims re-probed per Phase 7.
+> Verified: citation audit (`analyze.py verify`) exit 0 at commit <short-hash> — <N> citations audited, <M> findings fixed; <K> claims re-probed per Phase 7.
 
 ## 0. What you asked for
 <The user's goal from Step -1, one to three lines — usually the "what can I

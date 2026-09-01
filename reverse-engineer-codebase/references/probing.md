@@ -13,6 +13,7 @@
 - Decision archaeology: digging out the "why"
 - Ablation probes
 - Tracing one request end-to-end (the Layer 3 probe)
+- Layer 3b: dynamic probes (when the repo runs)
 - Test directory as documentation
 - Reading large files cheaply
 - Phase 7: verifying the report against the codebase
@@ -212,6 +213,7 @@ Answer each row of the system design table (SKILL.md Phase 5) with one cheap pro
 | Sync or async flow? | `rg "await \|\.then(\|go func\|tokio::spawn\|threading\|multiprocessing" -l` |
 | Retries / failure handling? | `rg "retry\|backoff\|circuit.?breaker\|deadline\|timeout\|fallback" -i -l` |
 | Consistency model? | migration files + `rg "transaction\|BEGIN\|COMMIT\|isolation\|serializable" -i` |
+| Entity lifecycle / state machine? | `rg "status\|state\|transition\|PENDING\|EXPIRED" -i -l` + enum/status fields, guard clauses |
 | Idempotency? | `rg "idempoten\|dedup\|exactly.?once\|at.?least.?once" -i -l` |
 | Backpressure / queues? | `rg "queue\|buffer\|channel\|semaphore\|rate.?limit\|throttle" -i -l` |
 | Authn/authz boundaries? | `rg "middleware\|interceptor\|guard\|policy\|authorize\|authenticate" -i -l` |
@@ -283,6 +285,23 @@ Record the file:line of each hop plus the per-hop data (responsibility, shape in
 ```bash
 python3 scripts/analyze.py trace <repo-root> <symbol>   # seed the trace
 ```
+
+## Layer 3b: dynamic probes (when the repo runs)
+
+The one evidence class static reading cannot fake (SKILL.md Phase 2, Layer 3b). Optional layer — run it only when the repo starts cheaply and safely and the user is OK executing it; sandboxed (container or throwaway dir), never against real data or third-party networks.
+
+```bash
+# Test suite = executable behavior evidence: record the per-suite pass/fail shape
+python -m pytest -q            # npm test · vitest run · go test ./... · cargo test
+
+# Validate the inferred runtime topology without starting anything
+docker compose config          # or: helm template · kubectl apply --dry-run=client
+
+# One smoke request through the traced flow, the worked instance's values
+docker compose up --wait && curl -s localhost:8000/charges/123
+```
+
+Record each result in the hypothesis ledger tagged `runtime`. A runtime-behavior claim with no `runtime` evidence keeps its `(inferred)` tag — Phase 7b checks exactly that.
 
 ## Test directory as documentation
 
