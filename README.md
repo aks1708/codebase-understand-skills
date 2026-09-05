@@ -1,53 +1,31 @@
 # Codebase Understanding Skills
 
-Agent skills that turn any repository into a system design study — one analyzes the codebase, the other teaches what the analysis found.
+An agent skill that turns any repository into a system design lesson, taught live from the code, with archify rendering the diagrams.
 
 ```
-reverse-engineer-codebase     ───▶     teach-architecture
-        (analyze)       report             (teach)
-                     is the input
+any repo ───▶ teach-architecture        archify
+             (prep pass + teach)  ───▶ renders the map + flow
+             runs the tests live       as interactive HTML
 ```
-
-## reverse-engineer-codebase
-
-Reverse engineer one repository into an evidence-bound architecture study.
-
-**Key ideas:**
-
-- **Ask the goal first.** The user states what they want to learn; the goal drives reading order, hypotheses, and report emphasis.
-- **Sweep everything.** 100% of the repo is enumerated and classified — config, migrations, and scripts often hold the *factual* architecture.
-- **Deep reads follow the sweep's verdict.** Small repos get every source file read; large repos get hypothesis-driven depth; huge repos (>2k files / >500k LOC) concentrate depth into 1–3 user-chosen deep zones, everything else breadth-only — with the scope stated in the report.
-- **Hypothesis-driven depth.** Falsifiable theories about design intent are probed with cheap evidence; refuted hypotheses are as valuable as confirmed ones. Deep reads are spent only where they earn insight.
-- **Runtime evidence when the repo runs.** Optional sandboxed dynamic probes — run the test suite, `docker compose config`, one smoke request — supply the one evidence class static reading can't fake; evidence is classed `static` / `history` / `runtime`, and runtime claims without runtime evidence stay `(inferred)`.
-- **Seams over files.** The unit of study is the connection — how components tie together (transport, contract, coupling, error semantics), not file interiors.
-- **Map to system design.** Every component gets a role (gateway, orchestrator, persistence, ...), every decision names its tradeoff, and every claim cites `file:line` or is marked `(inferred)`.
-- **Verify the report.** A mandatory second pass audits the draft against the codebase — every `file:line` anchor, path, link, and freshness stamp mechanically checked, the commit hash validated against the repo's git history (`analyze.py verify`), and the load-bearing claims re-probed cold before the report ships.
-
-**Output:** `ARCHITECTURE.md` (or `PRIOR-ART.md` / `docs/architecture/` wiki) — system map, component inventory, critical-path trace, decision rationale, lessons, and a coverage ledger proving the full sweep. Bundled scripts: `orient.py` and `analyze.py` (Python 3, stdlib only).
 
 ## teach-architecture
 
-Turn an existing report into an interactive terminal lesson. The report is the single source of truth — if it doesn't say it, the lesson doesn't teach it. Nothing is written to disk; the lesson lives in the conversation.
+Turn any repository into an interactive terminal lesson. The codebase is the single source of truth, read live — a bounded prep pass builds the syllabus, and every claim taught is anchored to `file:line` evidence read aloud at its beat. The lesson lives in the conversation; its two big diagrams (the system map and the critical-path flow) are rendered by the **archify** skill as interactive HTML in the repo.
 
 **Key ideas:**
 
-- **Needs a report.** No analysis, no lesson — teaching un-analyzed code invites hallucination.
-- **Derive the lens.** The report already says what the user wanted (template type + §0 goal): build-my-own for design-lessons/PRIOR-ART, onboarding for specific-flow goals. Ask only when the report leaves it ambiguous.
+- **Teaches the code directly.** A bounded, goal-directed prep pass (entry points, config, migrations, main modules, tests) builds the teaching ledger in working notes — nothing else is written to disk.
+- **Runs the tests live.** When the repo has tests, prep builds the environment (Python: `venv` + install packages; Node/Go/Rust: the stack's own tooling) and the guided-flow beat runs the critical-path test in front of the learner — predict what it asserts, run it, read the real output together. Test-fixture values become the worked instance. Failed setups are reported honestly; the test source read statically is the fallback.
 - **Absolute first principles.** Fixed level: assume zero vocabulary — every technical term, down to *queue* and *cache*, is built from plain words at first use. Problem → naive fix and why it fails → mechanism → name → cost. Mechanics before jargon; definitions never lean on undefined terms.
-- **Teach by asking.** Predict-before-reveal on every mechanism; live code reads with a prediction question attached.
-- **One worked instance.** A single concrete request (the `$42.00`) carried through every flow stop, failure lane, and final exam.
+- **Teach by asking.** Predict-before-reveal on every mechanism; live code reads and the test run each carry a prediction question.
+- **One worked instance.** A single concrete request (the `$42.00`) carried through every flow stop, failure lane, and section checks — input data taken from the test file that exercises the critical path (read from the test source, run or not), otherwise a labeled illustrative input built from the code's field names. Its payload rides the flow diagram's first message and its values every message after.
 - **Honest costs.** Every tradeoff is drawn as a dial with its marker; every "pattern to steal" ships with steal-when / reject-when; open questions close the lesson as visible homework.
-- **Final exam.** 8 generated questions — one at a time, answers isolated, graded with a breakdown.
+- **Section checks, not a final exam.** Every module ends with its own 1–3 question check (8–12 total), answers isolated, graded cumulatively with a per-miss breakdown.
 
-**Arc:** Frame → Map → Component tour → Guided flow → Tradeoff dials → Conventions & deviations → Patterns to steal → Final exam → Close. 30–50 minutes.
+**Arc:** Frame → Map → Component tour → Guided flow (with the live test run) → Tradeoff dials → Conventions & deviations → Patterns to steal → Close. 30–50 minutes.
 
-## How they fit together
+The **archify** skill renders the interactive diagrams: teach-architecture renders its system map (`architecture`) and critical-path flow (`sequence`) with archify by default, delivered in the repo. Archify renders verified facts only — it is a renderer, not a second analysis.
 
-| | reverse-engineer-codebase | teach-architecture |
-|---|---|---|
-| **Role** | Analyst | Teacher |
-| **Input** | A repo + a goal | A report (the lens is derived from it) |
-| **Output** | Study document on disk | Live lesson in the conversation |
-| **Register** | Experienced engineer | First principles |
+## Install Archify
 
-Run the analysis first; the report becomes the lesson's source of truth.
+[Install Archify](https://tt-a1i.github.io/archify/start.html?type=architecture&agent=codex&source=direct&input=description)
